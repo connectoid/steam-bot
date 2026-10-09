@@ -41,7 +41,9 @@ import db
 from config import (
     ADMIN_IDS,
     BOT_TOKEN,
+    MAINTENANCE,
     MARKUP_PERCENT,
+    NEWS_CHANNEL,
     PAYLI_WEBHOOK_SECRET,
     POLL_INTERVAL_SEC,
     REDIRECT_URL,
@@ -67,6 +69,11 @@ STEAM_LOGIN_RE = re.compile(r"^[A-Za-z0-9_.\-]{2,64}$")
 AMOUNT_RE = r"^\s*\d{1,7}([.,]\d{1,2})?\s*$"
 
 SUPPORT_TEXT = SUPPORT_CONTACT or "поддержку (/support)"
+
+COMING_SOON_TEXT = (
+    "🚀 Пополнение Steam скоро заработает — мы завершаем подключение платёжного сервиса."
+    + (f"\nО запуске сообщим в канале {NEWS_CHANNEL}." if NEWS_CHANNEL else "")
+)
 
 # Ссылки на фоновые задачи, чтобы их не собрал GC.
 _background_tasks: set[asyncio.Task] = set()
@@ -216,6 +223,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             f"С возвращением! Ваш логин Steam: {login}\n\n"
             "Пришлите сумму в рублях, которая должна прийти на баланс Steam (например: 500), "
             "и я пришлю ссылку на оплату по СБП.\n\nСменить логин: /login · Помощь: /help"
+            + (f"\n\n{COMING_SOON_TEXT}" if MAINTENANCE else "")
         )
         return
     await state.set_state(Form.waiting_login)
@@ -266,12 +274,19 @@ async def process_login(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         f"Логин сохранён: {login}\n\n"
-        "Теперь пришлите сумму в рублях, например 500 — и я пришлю оплату по СБП."
+        + (
+            f"{COMING_SOON_TEXT}\nКак только запустимся — просто пришлите сумму."
+            if MAINTENANCE
+            else "Теперь пришлите сумму в рублях, например 500 — и я пришлю оплату по СБП."
+        )
     )
 
 
 @router.message(F.text.regexp(AMOUNT_RE))
 async def process_amount(message: Message) -> None:
+    if MAINTENANCE:
+        await message.answer(COMING_SOON_TEXT)
+        return
     login = await db.get_user_login(message.from_user.id)
     if not login:
         await message.answer("Сначала пришлите логин Steam — нажмите /start.")
@@ -520,11 +535,14 @@ async def main() -> None:
     except Exception:
         log.exception("Не удалось установить меню команд")
 
-    poller = asyncio.create_task(poll_unfinished_orders())
+    if MAINTENANCE:
+        log.warning("Режим «скоро запуск»: заказы не создаются (нет PAYLI_API_TOKEN или MAINTENANCE=1).")
+    poller = None if MAINTENANCE else asyncio.create_task(poll_unfinished_orders())
     try:
         await dp.start_polling(bot)
     finally:
-        poller.cancel()
+        if poller:
+            poller.cancel()
         await runner.cleanup()
         await payli.close()
         await bot.session.close()
