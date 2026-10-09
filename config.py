@@ -3,6 +3,7 @@
 Скопируйте .env.example в .env и заполните реальными значениями.
 """
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,30 +16,46 @@ def _required(name: str) -> str:
     return value
 
 
-# Токен вашего Telegram-бота (от @BotFather)
+def _int_list(value: str) -> list[int]:
+    return [int(x) for x in value.replace(" ", "").split(",") if x]
+
+
+# Токен Telegram-бота (от @BotFather)
 BOT_TOKEN = _required("BOT_TOKEN")
 
-# Токен из кабинета партнёра Payli (Authorization: Bearer <API_TOKEN>)
+# Токен из кабинета партнёра Payli (Authorization: Bearer <API_TOKEN>).
+# Для создания заказов токену нужно право orders_create_acquirer,
+# для команды /refund — право orders_refund.
 PAYLI_API_TOKEN = _required("PAYLI_API_TOKEN")
+PAYLI_BASE_URL = os.environ.get("PAYLI_BASE_URL", "https://payli.ru")
 
-# Секрет для проверки подписи вебхуков Payli (X-Payli-Signature).
-# Можно придумать любую случайную строку — тот же секрет передаётся в webhook_secret при создании заказа.
+# Секрет для подписи вебхуков (X-Payli-Signature). Любая случайная строка до 512 символов,
+# например: openssl rand -hex 32. Без секрета вебхуки не подписываются — так делать не стоит.
 PAYLI_WEBHOOK_SECRET = os.environ.get("PAYLI_WEBHOOK_SECRET", "")
 
-# Ваша наценка сверх базовой комиссии Payli, в процентах.
-# Пример из документации: база 4%, наценка 2% -> итоговая комиссия 6%.
+# Ваша наценка в процентах от суммы платежа (partner_commission_percent).
+# Итоговая комиссия = базовая комиссия Payli + наценка, удерживается ИЗ платежа.
 MARKUP_PERCENT = float(os.environ.get("MARKUP_PERCENT", "2.0"))
 
-# Публичный HTTPS-адрес, на который Payli будет слать вебхуки о статусе заказа.
-# Требования из документации: только https, порт 443 или 8443, публичный хост.
-# Например: https://your-domain.example/payli/webhook
+# Публичный HTTPS-адрес для вебхуков Payli: только https, порт 443 или 8443, публичный хост.
 WEBHOOK_PUBLIC_URL = _required("WEBHOOK_PUBLIC_URL")
+WEBHOOK_PATH = "/payli/webhook"
 
-# На каком хосте/порту локально слушать входящие вебхуки (за них должен отвечать реверс-прокси
-# на WEBHOOK_PUBLIC_URL, если порт отличается от 443/8443 — см. README).
-WEBHOOK_LISTEN_HOST = os.environ.get("WEBHOOK_LISTEN_HOST", "0.0.0.0")
-WEBHOOK_LISTEN_PORT = int(os.environ.get("WEBHOOK_LISTEN_PORT", "8443"))
+# Где бот слушает вебхуки локально (за nginx).
+WEBHOOK_LISTEN_HOST = os.environ.get("WEBHOOK_LISTEN_HOST", "127.0.0.1")
+WEBHOOK_LISTEN_PORT = int(os.environ.get("WEBHOOK_LISTEN_PORT", "8091"))
+
+# Куда вернуть покупателя после оплаты (необязательно), например https://t.me/steam_charger_bot
+REDIRECT_URL = os.environ.get("REDIRECT_URL", "")
+
+# Telegram ID администраторов через запятую — им приходят алерты и доступны /balance, /order, /refund.
+# Свой ID можно узнать командой /id в боте.
+ADMIN_IDS = _int_list(os.environ.get("ADMIN_IDS", ""))
+
+# Контакт поддержки для пользователей, например @your_username
+SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "")
+
+# Как часто (сек) сверять незавершённые заказы через GET /orders/{id} — резерв, если вебхук не дошёл.
+POLL_INTERVAL_SEC = int(os.environ.get("POLL_INTERVAL_SEC", "120"))
 
 DB_PATH = os.environ.get("DB_PATH", "steam_bot.sqlite3")
-
-PAYLI_BASE_URL = "https://payli.ru"
