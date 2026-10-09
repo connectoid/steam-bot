@@ -26,7 +26,7 @@ BOT_TOKEN = _required("BOT_TOKEN")
 # Токен из кабинета партнёра Payli (Authorization: Bearer <API_TOKEN>).
 # Для создания заказов токену нужно право orders_create_acquirer,
 # для команды /refund — право orders_refund.
-PAYLI_API_TOKEN = _required("PAYLI_API_TOKEN")
+PAYLI_API_TOKEN = os.environ.get("PAYLI_API_TOKEN", "")
 PAYLI_BASE_URL = os.environ.get("PAYLI_BASE_URL", "https://payli.ru")
 
 # Секрет для подписи вебхуков (X-Payli-Signature). Любая случайная строка до 512 символов,
@@ -54,6 +54,13 @@ ADMIN_IDS = _int_list(os.environ.get("ADMIN_IDS", ""))
 
 # Контакт поддержки для пользователей, например @your_username
 SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "")
+
+# Режим «скоро запуск»: бот принимает логины, но заказы не создаёт.
+# Включается сам, пока не задан PAYLI_API_TOKEN, или вручную: MAINTENANCE=1
+MAINTENANCE = os.environ.get("MAINTENANCE", "").strip().lower() in ("1", "true", "yes", "on") or not PAYLI_API_TOKEN
+
+# Канал с новостями, например @steam_charger (показывается в режиме «скоро запуск»)
+NEWS_CHANNEL = os.environ.get("NEWS_CHANNEL", "")
 
 # Как часто (сек) сверять незавершённые заказы через GET /orders/{id} — резерв, если вебхук не дошёл.
 POLL_INTERVAL_SEC = int(os.environ.get("POLL_INTERVAL_SEC", "120"))

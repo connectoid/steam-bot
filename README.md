@@ -65,10 +65,9 @@ python3 -m venv venv && venv/bin/pip install -r requirements.txt
 cp .env.example .env   # первый раз; заполнить значения
 ```
 
-1. HTTPS: порт 443 на VPS занят VPN-сервером, поэтому вебхуки принимает nginx на 8443
-   (Payli разрешает 443 или 8443). Сертификат Let's Encrypt:
-   `sudo certbot certonly --nginx -d beley-n8n.duckdns.org`, затем конфиг
-   `deploy/nginx-steam-bot.conf` (инструкция внутри файла), порт 8443 открыть в firewall.
+1. HTTPS: порт 443 на VPS занят VPN-сервером, поэтому вебхуки идут через nginx на 8443
+   (Payli разрешает 443 или 8443), в тот же server-блок, что и n8n (`/etc/nginx/sites-available/n8n`,
+   сертификат Let's Encrypt уже есть). Location — в `deploy/nginx-steam-bot.conf`.
    В `.env`: `WEBHOOK_PUBLIC_URL=https://beley-n8n.duckdns.org:8443/payli/webhook`.
    Проверка: `curl https://beley-n8n.duckdns.org:8443/payli/webhook` → `{"ok": true}`.
 2. systemd:
