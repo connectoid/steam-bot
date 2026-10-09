@@ -1,0 +1,20 @@
+[Unit]
+Description=Steam Charger Telegram bot (@steam_charger_bot)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/dev/bots/steam-bot
+# .env читается самим ботом (load_dotenv) из WorkingDirectory
+ExecStart=/root/dev/bots/steam-bot/venv/bin/python bot.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+# Ctrl+C-аналог: даём боту корректно закрыть сессии
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
