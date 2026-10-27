@@ -26,7 +26,7 @@ BOT_TOKEN = _required("BOT_TOKEN")
 # Токен из кабинета партнёра Payli (Authorization: Bearer <API_TOKEN>).
 # Для создания заказов токену нужно право orders_create_acquirer,
 # для команды /refund — право orders_refund.
-PAYLI_API_TOKEN = os.environ.get("PAYLI_API_TOKEN", "")
+PAYLI_API_TOKEN = os.environ.get("PAYLI_API_TOKEN", "").strip()
 PAYLI_BASE_URL = os.environ.get("PAYLI_BASE_URL", "https://payli.ru")
 
 # Секрет для подписи вебхуков (X-Payli-Signature). Любая случайная строка до 512 символов,

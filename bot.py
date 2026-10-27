@@ -4,7 +4,8 @@ Steam Charger — Telegram-бот пополнения Steam по логину �
 Сценарий:
   1. /start -> если логин Steam не сохранён, бот просит его прислать.
   2. Пользователь присылает сумму, которая должна зачислиться на Steam -> бот считает сумму
-     к оплате (базовая комиссия Payli + ваша наценка удерживаются ИЗ платежа), создаёт заказ
+     к оплате (базовая комиссия Payli + ваша наценка удерживаются ИЗ платежа) и просит
+     подтвердить логин и сумму. По кнопке «Оплатить» создаёт заказ (Payli проверяет логин)
      и присылает ссылку на оплату по СБП + QR.
   3. Payli шлёт вебхук о смене статуса -> бот уведомляет пользователя (и админа о проблемах).
      Резерв: раз в POLL_INTERVAL_SEC бот сам сверяет незавершённые заказы через GET /orders/{id}.
@@ -31,6 +32,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
     BufferedInputFile,
+    CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -133,7 +135,7 @@ def error_text(e: PayliError, login: str) -> str:
         return (
             f"Steam не нашёл аккаунт с логином «{login}».\n"
             "Проверьте, что это логин для входа в Steam, а не ник в профиле, "
-            "и сохраните правильный командой /login."
+            "и сохраните правильный. Оплата не создана, деньги не списаны."
         )
     if e.code == "invalid_amount":
         return "Эта сумма вне допустимого диапазона. Попробуйте другую сумму."
@@ -146,21 +148,40 @@ def error_text(e: PayliError, login: str) -> str:
 
 # ---------- тексты ----------
 
+LOGIN_HELP_TEXT = (
+    "Где посмотреть логин Steam:\n"
+    "• В приложении Steam на ПК: нажмите на свой ник справа вверху → «Об аккаунте». "
+    "Логин написан в заголовке этой страницы.\n"
+    "• В браузере: откройте store.steampowered.com/account — логин вверху страницы.\n"
+    "• Это имя, которое вы вводите при входе в Steam вместе с паролем.\n\n"
+    "Логин ≠ ник в профиле. Пароль и коды Steam Guard не нужны — никому их не сообщайте."
+)
+
+# Сколько обычно идут деньги после оплаты (по факту тестов — около 20 минут).
+CREDIT_DELAY_TEXT = (
+    "После оплаты деньги поступают на Steam не мгновенно — обычно в течение 20–30 минут, "
+    "иногда дольше. Это нормально: как только они зачислятся, я пришлю уведомление сюда."
+)
+
 HELP_TEXT = (
     "Как пополнить Steam:\n"
     "1. Один раз пришлите логин Steam — имя, под которым вы входите в клиент "
     "(не ник в профиле). Сменить: /login\n"
     "2. Пришлите сумму в рублях, которая должна прийти на баланс, например: 500\n"
-    "3. Оплатите по ссылке или QR через СБП в приложении своего банка.\n\n"
-    "Сумма к оплате с учётом всех комиссий показывается до оплаты. "
-    "Ссылка действует 30 минут. Когда деньги зачислятся, я пришлю уведомление.\n\n"
+    "3. Проверьте логин и сумму, нажмите «Оплатить» и оплатите по ссылке или QR через СБП.\n\n"
+    "Сумма к оплате с учётом всех комиссий показывается до оплаты. Ссылка действует 30 минут. "
+    "Зачисление обычно занимает 20–30 минут после оплаты — когда деньги поступят, я пришлю уведомление.\n\n"
     "Пароль и коды Steam Guard не нужны никогда — не сообщайте их никому.\n\n"
     f"Вопросы: {SUPPORT_TEXT}"
 )
 
 # Уведомления пользователю по статусам заказа.
 USER_STATUS_TEXT = {
-    "payment_received": "💳 Оплата по заказу {short} получена. Зачисляем {credit} на Steam-аккаунт {login}…",
+    "payment_received": (
+        "💳 Оплата по заказу {short} получена, спасибо!\n\n"
+        "Зачисляем {credit} на Steam-аккаунт {login}. Обычно это занимает 20–30 минут, иногда дольше — "
+        "ничего делать не нужно. Как только деньги поступят, я пришлю уведомление."
+    ),
     "completed": "✅ Готово! На Steam-аккаунт {login} зачислено {credit}.",
     "failed": (
         "❌ Не удалось зачислить деньги по заказу {short}. Мы уже разбираемся и вернём оплату "
@@ -214,6 +235,17 @@ async def handle_status(public_id: str, status: str, source: str) -> None:
 
 # ---------- Telegram: пользовательские команды ----------
 
+def change_login_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="✏️ Изменить логин", callback_data="chlogin")]]
+    )
+
+
+async def ask_login(message: Message, state: FSMContext, intro: str) -> None:
+    await state.set_state(Form.waiting_login)
+    await message.answer(f"{intro}\n\n{LOGIN_HELP_TEXT}")
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     login = await db.get_user_login(message.from_user.id)
@@ -226,18 +258,20 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             + (f"\n\n{COMING_SOON_TEXT}" if MAINTENANCE else "")
         )
         return
-    await state.set_state(Form.waiting_login)
-    await message.answer(
-        "Привет! Я пополняю баланс Steam через СБП.\n\n"
-        "Пришлите ваш логин Steam — имя, под которым вы входите в клиент Steam "
-        "(не ник в профиле). Пароль не нужен."
-    )
+    await ask_login(message, state, "Привет! Я пополняю баланс Steam через СБП.\n\nПришлите ваш логин Steam.")
 
 
 @router.message(Command("login"))
 async def cmd_change_login(message: Message, state: FSMContext) -> None:
-    await state.set_state(Form.waiting_login)
-    await message.answer("Пришлите логин Steam (имя для входа, не ник).")
+    current = await db.get_user_login(message.from_user.id)
+    intro = f"Сейчас сохранён логин: {current}\nПришлите новый логин Steam." if current else "Пришлите логин Steam."
+    await ask_login(message, state, intro)
+
+
+@router.callback_query(F.data == "chlogin")
+async def cb_change_login(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await ask_login(callback.message, state, "Пришлите правильный логин Steam.")
 
 
 @router.message(Command("help"))
@@ -267,23 +301,28 @@ async def process_login(message: Message, state: FSMContext) -> None:
     if not STEAM_LOGIN_RE.match(login):
         await message.answer(
             "Это не похоже на логин Steam: допустимы латинские буквы, цифры и «_», "
-            "от 2 до 64 символов. Попробуйте ещё раз."
+            f"от 2 до 64 символов, без пробелов. Попробуйте ещё раз.\n\n{LOGIN_HELP_TEXT}"
         )
         return
     await db.set_user_login(message.from_user.id, login)
     await state.clear()
     await message.answer(
-        f"Логин сохранён: {login}\n\n"
+        f"Логин сохранён: {login}\n"
+        "Проверьте, что это именно логин для входа, а не ник в профиле. "
+        "Существует ли такой аккаунт, Steam проверит при создании заказа — до оплаты, "
+        "так что заплатить за неверный логин не получится.\n\n"
         + (
             f"{COMING_SOON_TEXT}\nКак только запустимся — просто пришлите сумму."
             if MAINTENANCE
-            else "Теперь пришлите сумму в рублях, например 500 — и я пришлю оплату по СБП."
-        )
+            else "Теперь пришлите сумму в рублях, например 500."
+        ),
+        reply_markup=change_login_kb(),
     )
 
 
 @router.message(F.text.regexp(AMOUNT_RE))
 async def process_amount(message: Message) -> None:
+    """Шаг 1: посчитать сумму и попросить подтвердить логин и сумму."""
     if MAINTENANCE:
         await message.answer(COMING_SOON_TEXT)
         return
@@ -300,72 +339,131 @@ async def process_amount(message: Message) -> None:
     processing_msg = await message.answer("Считаю сумму к оплате…")
     try:
         service = await payli.get_steam_service()
-        min_rub, max_rub = float(service["min_rub"]), float(service["max_rub"])
-        if not (min_rub <= credit <= max_rub):
-            await processing_msg.edit_text(
-                f"Пополнить можно на сумму от {rub(min_rub)} до {rub(max_rub)}. Пришлите другую сумму."
-            )
-            return
-        base_commission = float(service["base_commission_percent"])
-        amount_pay = calc_amount_pay(credit, base_commission, MARKUP_PERCENT)
-        resp = await payli.create_steam_order(
-            account=login,
-            amount_pay_rub=amount_pay,
-            partner_commission_percent=MARKUP_PERCENT,
-            idempotency_key=str(uuid.uuid4()),
-            webhook_url=WEBHOOK_PUBLIC_URL,
-            webhook_secret=PAYLI_WEBHOOK_SECRET,
-            redirect_url=REDIRECT_URL,
-        )
     except PayliError as e:
-        log.warning("Не удалось создать заказ для %s: %s", message.from_user.id, e)
+        log.warning("Не удалось получить условия Steam: %s", e)
         await processing_msg.edit_text(error_text(e, login))
-        if e.code in ("invalid_partner_commission_percent", "invalid_total_commission_percent",
-                      "unauthorized", "insufficient_scope", "forbidden", "invalid_webhook_url"):
-            await notify_admins(f"🛠 Ошибка настройки при создании заказа: {e.code} {e.message}")
         return
-
-    order = resp.get("order", {})
-    public_id = order.get("public_id")
-    pay_url = (resp.get("payment") or {}).get("pay_url")
-    amount_pay = float(order.get("amount_pay_rub", amount_pay))
-
-    if public_id:
-        await db.create_order(
-            db.OrderRecord(
-                public_id=public_id,
-                telegram_id=message.from_user.id,
-                steam_login=login,
-                requested_credit_rub=credit,
-                amount_pay_rub=amount_pay,
-                status=order.get("status", "pending_payment"),
-                base_commission_percent=base_commission,
-                partner_commission_percent=order.get("partner_commission_percent", MARKUP_PERCENT),
-                partner_commission_rub=order.get("partner_commission_rub"),
-                partner_fee_rub=order.get("partner_fee_rub"),
-            )
+    min_rub, max_rub = float(service["min_rub"]), float(service["max_rub"])
+    if not (min_rub <= credit <= max_rub):
+        await processing_msg.edit_text(
+            f"Пополнить можно на сумму от {rub(min_rub)} до {rub(max_rub)}. Пришлите другую сумму."
         )
-        await db.log_event(public_id, "create", resp)
-
-    if not public_id or not pay_url:
-        log.error("Payli вернул заказ без public_id/pay_url: %s", resp)
-        await processing_msg.edit_text(f"Не удалось получить ссылку на оплату. Попробуйте ещё раз или напишите в {SUPPORT_TEXT}.")
         return
+    amount_pay = calc_amount_pay(credit, float(service["base_commission_percent"]), MARKUP_PERCENT)
 
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить по СБП", url=pay_url)]])
-    await processing_msg.delete()
-    await message.answer_photo(
-        photo=BufferedInputFile(make_qr_png(pay_url), filename="payment_qr.png"),
-        caption=(
-            f"Логин Steam: {login}\n"
-            f"Зачислится: {rub(credit)}\n"
-            f"К оплате: {rub(amount_pay)} — все комиссии включены\n\n"
-            "Нажмите «Оплатить по СБП» или отсканируйте QR с телефона. "
-            "Ссылка действует 30 минут, о зачислении я сообщу.\n"
-            f"Заказ: {public_id[:8]}"
-        ),
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"✅ Оплатить {rub(amount_pay)}", callback_data=f"pay:{credit:.2f}")],
+        [InlineKeyboardButton(text="✏️ Изменить логин", callback_data="chlogin")],
+    ])
+    await processing_msg.edit_text(
+        "Проверьте заказ:\n\n"
+        f"Логин Steam: {login}\n"
+        f"Зачислится: {rub(credit)}\n"
+        f"К оплате: {rub(amount_pay)} — все комиссии включены\n\n"
+        "Если логин верный — нажмите «Оплатить».",
         reply_markup=keyboard,
     )
+
+
+# Защита от двойного нажатия «Оплатить».
+_creating_orders: set[int] = set()
+
+
+@router.callback_query(F.data.startswith("pay:"))
+async def cb_pay(callback: CallbackQuery) -> None:
+    """Шаг 2: создать заказ в Payli (здесь же Payli проверяет логин) и прислать оплату."""
+    user_id = callback.from_user.id
+    if MAINTENANCE:
+        await callback.answer(COMING_SOON_TEXT[:190], show_alert=True)
+        return
+    if user_id in _creating_orders:
+        await callback.answer("Заказ уже создаётся…")
+        return
+    try:
+        credit = round(float(callback.data.split(":", 1)[1]), 2)
+    except ValueError:
+        await callback.answer()
+        return
+    login = await db.get_user_login(user_id)
+    if not login:
+        await callback.answer("Сначала укажите логин Steam: /start", show_alert=True)
+        return
+
+    _creating_orders.add(user_id)
+    try:
+        await callback.answer()
+        msg = callback.message
+        if not isinstance(msg, Message):
+            await bot.send_message(user_id, "Это сообщение устарело — пришлите сумму ещё раз.")
+            return
+        await msg.edit_text(f"Создаю заказ и проверяю логин {login}…")
+        try:
+            service = await payli.get_steam_service()
+            base_commission = float(service["base_commission_percent"])
+            amount_pay = calc_amount_pay(credit, base_commission, MARKUP_PERCENT)
+            resp = await payli.create_steam_order(
+                account=login,
+                amount_pay_rub=amount_pay,
+                partner_commission_percent=MARKUP_PERCENT,
+                idempotency_key=str(uuid.uuid4()),
+                webhook_url=WEBHOOK_PUBLIC_URL,
+                webhook_secret=PAYLI_WEBHOOK_SECRET,
+                redirect_url=REDIRECT_URL,
+            )
+        except PayliError as e:
+            log.warning("Не удалось создать заказ для %s: %s", user_id, e)
+            await msg.edit_text(
+                error_text(e, login),
+                reply_markup=change_login_kb() if e.code == "steam_login_invalid" else None,
+            )
+            if e.code in ("invalid_partner_commission_percent", "invalid_total_commission_percent",
+                          "unauthorized", "insufficient_scope", "forbidden", "invalid_webhook_url"):
+                await notify_admins(f"🛠 Ошибка настройки при создании заказа: {e.code} {e.message}")
+            return
+
+        order = resp.get("order", {})
+        public_id = order.get("public_id")
+        pay_url = (resp.get("payment") or {}).get("pay_url")
+        amount_pay = float(order.get("amount_pay_rub", amount_pay))
+
+        if public_id:
+            await db.create_order(
+                db.OrderRecord(
+                    public_id=public_id,
+                    telegram_id=user_id,
+                    steam_login=login,
+                    requested_credit_rub=credit,
+                    amount_pay_rub=amount_pay,
+                    status=order.get("status", "pending_payment"),
+                    base_commission_percent=base_commission,
+                    partner_commission_percent=order.get("partner_commission_percent", MARKUP_PERCENT),
+                    partner_commission_rub=order.get("partner_commission_rub"),
+                    partner_fee_rub=order.get("partner_fee_rub"),
+                )
+            )
+            await db.log_event(public_id, "create", resp)
+
+        if not public_id or not pay_url:
+            log.error("Payli вернул заказ без public_id/pay_url: %s", resp)
+            await msg.edit_text(f"Не удалось получить ссылку на оплату. Попробуйте ещё раз или напишите в {SUPPORT_TEXT}.")
+            return
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Оплатить по СБП", url=pay_url)]])
+        await msg.delete()
+        await msg.answer_photo(
+            photo=BufferedInputFile(make_qr_png(pay_url), filename="payment_qr.png"),
+            caption=(
+                f"Логин Steam: {login} ✓\n"
+                f"Зачислится: {rub(credit)}\n"
+                f"К оплате: {rub(amount_pay)} — все комиссии включены\n\n"
+                "Нажмите «Оплатить по СБП» или отсканируйте QR с телефона. Ссылка действует 30 минут.\n\n"
+                f"⏳ {CREDIT_DELAY_TEXT}\n"
+                f"Заказ: {public_id[:8]}"
+            ),
+            reply_markup=keyboard,
+        )
+    finally:
+        _creating_orders.discard(user_id)
 
 
 # ---------- Telegram: команды администратора ----------
