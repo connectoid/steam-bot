@@ -93,3 +93,29 @@ cp .env.example .env   # первый раз; заполнить значени�
 - Историю заказов пользователя (`/orders`).
 - Оплату картой/криптой (`payment_method: card | crypto`) — в API уже есть.
 - Другие товары каталога Payli (`topup`, `voucher`, `esim`).
+
+## MAX-версия (max_bot.py)
+
+Копия бота для мессенджера MAX на MAX Bot API (`max_api.py` — свой клиент, официальной
+Python-библиотеки нет). Общие модули: `config.py`, `db.py`, `payli_client.py`.
+
+- Отдельный процесс и служба `deploy/steam-bot-max.service`, своя база `MAX_DB_PATH`.
+- Сообщения из MAX — long polling (вебхук MAX требует порт 443, а он занят VPN).
+- Вебхуки Payli по заказам из MAX — `/payli/webhook-max` → `127.0.0.1:8092`
+  (location в `deploy/nginx-steam-bot.conf`).
+- Админ-команды `/balance`, `/order`, `/refund` — для `MAX_ADMIN_IDS`; если пусто,
+  алерты по проблемным заказам уходят Telegram-админам.
+
+Запуск на VPS:
+
+1. Сертификат Минцифры (нужен для `platform-api2.max.ru`):
+   ```bash
+   sudo curl -fsSL -o /usr/local/share/ca-certificates/russian_trusted_root_ca.crt https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt
+   sudo curl -fsSL -o /usr/local/share/ca-certificates/russian_trusted_sub_ca.crt https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt
+   sudo update-ca-certificates
+   ```
+2. Переменные `MAX_*` в `.env` (см. `.env.example`).
+3. Проверка токена: `curl -s https://platform-api2.max.ru/me -H "Authorization: $MAX_BOT_TOKEN"`.
+4. nginx: location `/payli/webhook-max`, `sudo nginx -t && sudo systemctl reload nginx`.
+5. `sudo cp deploy/steam-bot-max.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now steam-bot-max`,
+   логи: `sudo journalctl -u steam-bot-max -f`.

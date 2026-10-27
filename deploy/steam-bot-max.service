@@ -1,0 +1,19 @@
+[Unit]
+Description=Steam Charger MAX bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/dev/bots/steam-bot
+# .env общий с Telegram-ботом, читается самим ботом (load_dotenv)
+ExecStart=/root/dev/bots/steam-bot/venv/bin/python max_bot.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
